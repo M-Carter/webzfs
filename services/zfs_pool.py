@@ -3,6 +3,7 @@ ZFS Pool Management Service
 Handles zpool operations: list, status, create, destroy, scrub, etc.
 """
 import re
+import os
 import subprocess
 from typing import List, Dict, Any, Optional
 from datetime import datetime
@@ -26,22 +27,50 @@ class ZFSPoolService:
         """Initialize the ZFS Pool Service with settings"""
         self.settings = Settings()
         self.timeouts = self.settings.ZPOOL_TIMEOUTS
-    
-    @classmethod
-    def validate_pool_name(cls, pool_name: str) -> None:
+
+    def _run_zfs_command(self, args: List[str], timeout_key: str = 'default', check: bool = True) -> subprocess.CompletedProcess:
         """
-        Validate a ZFS pool name against naming rules.
-        
-        ZFS pool names must:
-        - Start with an alphanumeric character
-        - Contain only alphanumeric characters, underscores, hyphens, periods, or colons
+        Helper to run ZFS commands with automatic sudo handling and centralized error management.
         
         Args:
-            pool_name: The pool name to validate
-            
-        Raises:
-            ValueError: If the pool name is invalid
+            args: The command arguments (e.g., ['zpool', 'list'])
+            timeout_key: Key to look up timeout in settings (e.g., 'list', 'status')
+            check: Whether to raise CalledProcessError on non-zero exit code
         """
+        timeout = self.timeouts.get(timeout_key, self.timeouts['default'])
+        
+        # Original Creator Intent: This is where we would switch to libzfs logic
+        # if HAS_LIBZFS_CORE and self.prefer_bindings:
+        #     return self._run_libzfs_command(...)
+
+        # Fallback / Shell Logic
+        cmd = list(args)
+        
+        # Check if we are running as root; if not, prepend sudo
+        if os.geteuid() != 0:
+            cmd.insert(0, 'sudo')
+
+        try:
+            return subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=check,
+                timeout=timeout
+            )
+        except subprocess.TimeoutExpired:
+            cmd_str = " ".join(cmd)
+            raise Exception(
+                f"Command '{cmd_str}' timed out after {timeout} seconds. "
+                "The system may be unresponsive or the pool is busy."
+            )
+        except subprocess.CalledProcessError as e:
+            # Re-raise with a clear message, preserving the stderr from ZFS
+            raise Exception(f"ZFS command failed: {e.stderr.strip()}")
+
+    @classmethod
+    def validate_pool_name(cls, pool_name: str) -> None:
+        """Validate a ZFS pool name against naming rules."""
         if not pool_name:
             raise ValueError("Pool name cannot be empty")
         
@@ -53,424 +82,209 @@ class ZFSPoolService:
             )
     
     def list_pools(self) -> List[Dict[str, Any]]:
-        """
-        List all ZFS pools with their key properties
+        """List all ZFS pools with their key properties"""
+        result = self._run_zfs_command(
+            ['zpool', 'list', '-H', '-o', 'name,size,alloc,free,frag,cap,dedup,health,altroot'],
+            timeout_key='list'
+        )
         
-        Returns:
-            List of dictionaries containing pool information
-        """
-        timeout = self.timeouts.get('list', self.timeouts['default'])
-        try:
-            result = subprocess.run(
-                ['zpool', 'list', '-H', '-o', 'name,size,alloc,free,frag,cap,dedup,health,altroot'],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-            
-            pools = []
-            for line in result.stdout.strip().split('\n'):
-                if not line:
-                    continue
-                    
-                parts = line.split('\t')
-                if len(parts) >= 9:
-                    pools.append({
-                        'name': parts[0],
-                        'size': parts[1],
-                        'alloc': parts[2],
-                        'free': parts[3],
-                        'frag': parts[4],
-                        'cap': parts[5],
-                        'dedup': parts[6],
-                        'health': parts[7],
-                        'altroot': parts[8] if parts[8] != '-' else None
-                    })
-            
-            return pools
+        pools = []
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+                
+            parts = line.split('\t')
+            if len(parts) >= 9:
+                pools.append({
+                    'name': parts[0],
+                    'size': parts[1],
+                    'alloc': parts[2],
+                    'free': parts[3],
+                    'frag': parts[4],
+                    'cap': parts[5],
+                    'dedup': parts[6],
+                    'health': parts[7],
+                    'altroot': parts[8] if parts[8] != '-' else None
+                })
         
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool list command timed out after {timeout} seconds. The system may be unresponsive or pools unavailable.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to list pools: {e.stderr}")
+        return pools
     
     def get_pool_status(self, pool_name: str) -> Dict[str, Any]:
-        """
-        Get detailed status for a specific pool
-        
-        Args:
-            pool_name: Name of the pool
-            
-        Returns:
-            Dictionary with pool status details
-        """
+        """Get detailed status for a specific pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('status', self.timeouts['default'])
-        try:
-            # Get detailed status
-            result = subprocess.run(
-                ['zpool', 'status', pool_name],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-            
-            # Get pool properties
-            props_timeout = self.timeouts.get('properties', self.timeouts['default'])
-            props_result = subprocess.run(
-                ['zpool', 'get', '-H', 'all', pool_name],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=props_timeout
-            )
-            
-            # Parse properties
-            properties = {}
-            for line in props_result.stdout.strip().split('\n'):
-                if not line:
-                    continue
-                parts = line.split('\t')
-                if len(parts) >= 3:
-                    properties[parts[1]] = {
-                        'value': parts[2],
-                        'source': parts[3] if len(parts) > 3 else 'default'
-                    }
-            
-            return {
-                'name': pool_name,
-                'status_output': result.stdout,
-                'properties': properties
-            }
         
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool status command timed out after {timeout} seconds. The system may be unresponsive or pool unavailable.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get pool status: {e.stderr}")
+        # Get detailed status
+        status_result = self._run_zfs_command(
+            ['zpool', 'status', pool_name],
+            timeout_key='status'
+        )
+        
+        # Get pool properties
+        props_result = self._run_zfs_command(
+            ['zpool', 'get', '-H', 'all', pool_name],
+            timeout_key='properties'
+        )
+        
+        # Parse properties
+        properties = {}
+        for line in props_result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            parts = line.split('\t')
+            if len(parts) >= 3:
+                properties[parts[1]] = {
+                    'value': parts[2],
+                    'source': parts[3] if len(parts) > 3 else 'default'
+                }
+        
+        return {
+            'name': pool_name,
+            'status_output': status_result.stdout,
+            'properties': properties
+        }
     
     def get_pool_iostat(self, pool_name: Optional[str] = None, verbose: bool = False) -> Dict[str, Any]:
-        """
-        Get I/O statistics for pools
-        
-        Args:
-            pool_name: Optional pool name to filter by
-            verbose: Include per-vdev statistics
-            
-        Returns:
-            Dictionary with I/O statistics
-        """
+        """Get I/O statistics for pools"""
         if pool_name:
             self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('iostat', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'iostat', '-H']
-            if verbose:
-                cmd.append('-v')
-            if pool_name:
-                cmd.append(pool_name)
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-            
-            return {
-                'output': result.stdout,
-                'timestamp': datetime.now().isoformat()
-            }
+        cmd = ['zpool', 'iostat', '-H']
+        if verbose:
+            cmd.append('-v')
+        if pool_name:
+            cmd.append(pool_name)
         
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool iostat command timed out after {timeout} seconds. The system may be unresponsive.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get pool iostat: {e.stderr}")
+        result = self._run_zfs_command(cmd, timeout_key='iostat')
+        
+        return {
+            'output': result.stdout,
+            'timestamp': datetime.now().isoformat()
+        }
     
     def scrub_pool(self, pool_name: str) -> None:
-        """
-        Start a scrub on the specified pool
-        
-        Args:
-            pool_name: Name of the pool to scrub
-        """
+        """Start a scrub on the specified pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('scrub', self.timeouts['default'])
-        try:
-            subprocess.run(
-                ['zpool', 'scrub', pool_name],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool scrub command timed out after {timeout} seconds. The system may be unresponsive.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to start scrub: {e.stderr}")
+        self._run_zfs_command(['zpool', 'scrub', pool_name], timeout_key='scrub')
     
     def stop_scrub(self, pool_name: str) -> None:
-        """
-        Stop a running scrub on the specified pool
-        
-        Args:
-            pool_name: Name of the pool
-        """
+        """Stop a running scrub on the specified pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('scrub', self.timeouts['default'])
-        try:
-            subprocess.run(
-                ['zpool', 'scrub', '-s', pool_name],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool stop scrub command timed out after {timeout} seconds. The system may be unresponsive.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to stop scrub: {e.stderr}")
+        self._run_zfs_command(['zpool', 'scrub', '-s', pool_name], timeout_key='scrub')
     
     def export_pool(self, pool_name: str, force: bool = False) -> None:
-        """
-        Export a ZFS pool
-        
-        Args:
-            pool_name: Name of the pool to export
-            force: Force unmount even if busy
-        """
+        """Export a ZFS pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('export', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'export']
-            if force:
-                cmd.append('-f')
-            cmd.append(pool_name)
-            
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool export command timed out after {timeout} seconds. Pool may be busy or system unresponsive.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to export pool: {e.stderr}")
+        cmd = ['zpool', 'export']
+        if force:
+            cmd.append('-f')
+        cmd.append(pool_name)
+        
+        self._run_zfs_command(cmd, timeout_key='export')
     
     def import_pool(self, pool_name: str, force: bool = False, 
                    altroot: Optional[str] = None) -> None:
-        """
-        Import a ZFS pool
-        
-        Args:
-            pool_name: Name of the pool to import
-            force: Force import even if previously imported
-            altroot: Alternative root directory
-        """
+        """Import a ZFS pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('import', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'import']
-            if force:
-                cmd.append('-f')
-            if altroot:
-                cmd.extend(['-R', altroot])
-            cmd.append(pool_name)
-            
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool import command timed out after {timeout} seconds. This may occur with many devices or slow disk scanning.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to import pool: {e.stderr}")
+        cmd = ['zpool', 'import']
+        if force:
+            cmd.append('-f')
+        if altroot:
+            cmd.extend(['-R', altroot])
+        cmd.append(pool_name)
+        
+        self._run_zfs_command(cmd, timeout_key='import')
     
     def get_pool_history(self, pool_name: str, internal: bool = False, 
                         limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Get command history for a pool
-        
-        Args:
-            pool_name: Name of the pool
-            internal: Include internal events
-            limit: Maximum number of entries to return
-            
-        Returns:
-            List of history entries
-        """
+        """Get command history for a pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('history', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'history', '-l']
-            if internal:
-                cmd.append('-i')
-            cmd.append(pool_name)
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-            
-            history = []
-            for line in result.stdout.strip().split('\n'):
-                if not line:
-                    continue
-                history.append({'entry': line})
-            
-            if limit:
-                history = history[-limit:]
-            
-            return history
+        cmd = ['zpool', 'history', '-l']
+        if internal:
+            cmd.append('-i')
+        cmd.append(pool_name)
         
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool history command timed out after {timeout} seconds. History may be very large.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get pool history: {e.stderr}")
+        result = self._run_zfs_command(cmd, timeout_key='history')
+        
+        history = []
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            history.append({'entry': line})
+        
+        if limit:
+            history = history[-limit:]
+        
+        return history
     
     def create_pool(self, pool_name: str, vdevs: List[str], 
                    properties: Optional[Dict[str, str]] = None,
                    force: bool = False) -> None:
-        """
-        Create a new ZFS pool
-        
-        Args:
-            pool_name: Name for the new pool
-            vdevs: List of vdev specifications (e.g., ['mirror', '/dev/sda', '/dev/sdb'])
-            properties: Optional dictionary of pool properties to set
-            force: Force creation even if devices are in use
-        """
+        """Create a new ZFS pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('create', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'create']
-            
-            if force:
-                cmd.append('-f')
-            
-            # Add properties
-            if properties:
-                for key, value in properties.items():
-                    cmd.extend(['-o', f'{key}={value}'])
-            
-            cmd.append(pool_name)
-            cmd.extend(vdevs)
-            
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool create command timed out after {timeout} seconds. Pool creation can take time with many devices.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to create pool: {e.stderr}")
+        cmd = ['zpool', 'create']
+        
+        if force:
+            cmd.append('-f')
+        
+        # Add properties
+        if properties:
+            for key, value in properties.items():
+                cmd.extend(['-o', f'{key}={value}'])
+        
+        cmd.append(pool_name)
+        cmd.extend(vdevs)
+        
+        self._run_zfs_command(cmd, timeout_key='create')
     
     def destroy_pool(self, pool_name: str, force: bool = False) -> None:
-        """
-        Destroy a ZFS pool
-        
-        Args:
-            pool_name: Name of the pool to destroy
-            force: Force destruction even if mounted
-            
-        WARNING: This is a destructive operation!
-        """
+        """Destroy a ZFS pool (WARNING: Destructive)"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('destroy', self.timeouts['default'])
-        try:
-            cmd = ['zpool', 'destroy']
-            if force:
-                cmd.append('-f')
-            cmd.append(pool_name)
-            
-            subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool destroy command timed out after {timeout} seconds. Pool destruction can take time with cleanup operations.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to destroy pool: {e.stderr}")
+        cmd = ['zpool', 'destroy']
+        if force:
+            cmd.append('-f')
+        cmd.append(pool_name)
+        
+        self._run_zfs_command(cmd, timeout_key='destroy')
     
     def set_pool_property(self, pool_name: str, property_name: str, 
                          property_value: str) -> None:
-        """
-        Set a property on a pool
-        
-        Args:
-            pool_name: Name of the pool
-            property_name: Name of the property to set
-            property_value: Value to set
-        """
+        """Set a property on a pool"""
         self.validate_pool_name(pool_name)
-        timeout = self.timeouts.get('properties', self.timeouts['default'])
-        try:
-            subprocess.run(
-                ['zpool', 'set', f'{property_name}={property_value}', pool_name],
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=timeout
-            )
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool set property command timed out after {timeout} seconds. The system may be unresponsive.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to set pool property: {e.stderr}")
+        self._run_zfs_command(
+            ['zpool', 'set', f'{property_name}={property_value}', pool_name],
+            timeout_key='properties'
+        )
     
     def get_importable_pools(self) -> List[Dict[str, Any]]:
-        """
-        List pools available for import
-        
-        Returns:
-            List of importable pools
-        """
-        timeout = self.timeouts.get('import', self.timeouts['default'])
+        """List pools available for import"""
+        # check=False because 'zpool import' returns non-zero if no pools are found
+        # checking safely inside the method
         try:
-            result = subprocess.run(
-                ['zpool', 'import'],
-                capture_output=True,
-                text=True,
-                check=False,  # Returns non-zero if no pools to import
-                timeout=timeout
+            result = self._run_zfs_command(
+                ['zpool', 'import'], 
+                timeout_key='import',
+                check=False
             )
-            
-            # Parse the output to extract pool information
-            pools = []
-            current_pool = None
-            
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                if line.startswith('pool:'):
-                    if current_pool:
-                        pools.append(current_pool)
-                    current_pool = {'name': line.split(':', 1)[1].strip()}
-                elif current_pool and line.startswith('id:'):
-                    current_pool['id'] = line.split(':', 1)[1].strip()
-                elif current_pool and line.startswith('state:'):
-                    current_pool['state'] = line.split(':', 1)[1].strip()
-            
-            if current_pool:
-                pools.append(current_pool)
-            
-            return pools
-        
-        except subprocess.TimeoutExpired:
-            raise Exception(f"ZPool import scan timed out after {timeout} seconds. Scanning for importable pools can be slow with many devices.")
         except Exception as e:
-            raise Exception(f"Failed to list importable pools: {str(e)}")
+            # run_zfs_command might still throw if it's a timeout
+            raise e
+
+        # Parse the output to extract pool information
+        pools = []
+        current_pool = None
+        
+        for line in result.stdout.split('\n'):
+            line = line.strip()
+            if line.startswith('pool:'):
+                if current_pool:
+                    pools.append(current_pool)
+                current_pool = {'name': line.split(':', 1)[1].strip()}
+            elif current_pool and line.startswith('id:'):
+                current_pool['id'] = line.split(':', 1)[1].strip()
+            elif current_pool and line.startswith('state:'):
+                current_pool['state'] = line.split(':', 1)[1].strip()
+        
+        if current_pool:
+            pools.append(current_pool)
+        
+        return pools
