@@ -310,6 +310,7 @@ User=webzfs
 Group=webzfs
 WorkingDirectory=/opt/webzfs
 Environment="PATH=/opt/webzfs/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/opt/webzfs/.env
 ExecStart=/opt/webzfs/.venv/bin/gunicorn -c config/gunicorn.conf.py
 Restart=always
 RestartSec=5
