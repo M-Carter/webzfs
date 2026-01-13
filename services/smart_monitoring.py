@@ -5,6 +5,7 @@ Handles SMART data retrieval, test scheduling, and smartd integration
 import subprocess
 import re
 import json
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -28,6 +29,29 @@ class SMARTMonitoringService:
         
         self._ensure_data_directory()
         self._initialize_files()
+
+    def _run_command(self, cmd: List[str], check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+        """
+        Helper to run commands with automatic sudo handling.
+        """
+        command = list(cmd)
+        
+        # Check if we are running as root; if not, prepend sudo
+        if os.geteuid() != 0:
+            command.insert(0, 'sudo')
+
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=check,
+                **kwargs
+            )
+        except subprocess.CalledProcessError as e:
+            # Re-raise with a clear message
+            cmd_str = " ".join(command)
+            raise Exception(f"Command '{cmd_str}' failed: {e.stderr.strip()}")
     
     def _ensure_data_directory(self) -> None:
         """Ensure the data directory exists"""
@@ -52,6 +76,7 @@ class SMARTMonitoringService:
     def _write_json(self, file_path: Path, data: Dict[str, Any]) -> None:
         """Write JSON file atomically"""
         import tempfile
+        # These are user-level config files, so standard Python IO is fine here
         temp_file = file_path.with_suffix('.tmp')
         with open(temp_file, 'w') as f:
             json.dump(data, f, indent=2)
@@ -66,12 +91,7 @@ class SMARTMonitoringService:
         """
         try:
             # Try to get list from smartctl --scan
-            result = subprocess.run(
-                ['smartctl', '--scan'],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = self._run_command(['smartctl', '--scan'])
             
             disks = []
             for line in result.stdout.strip().split('\n'):
@@ -98,26 +118,15 @@ class SMARTMonitoringService:
             
         except FileNotFoundError:
             raise Exception("smartctl not found. Install smartmontools package.")
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to list disks: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to list disks: {str(e)}")
     
     def get_smart_data(self, disk: str) -> Dict[str, Any]:
         """
         Get complete SMART data for a disk
-        
-        Args:
-            disk: Disk path (e.g., /dev/sda)
-            
-        Returns:
-            Dictionary with complete SMART data
         """
         try:
-            result = subprocess.run(
-                ['smartctl', '-a', disk],
-                capture_output=True,
-                text=True,
-                check=False  # Some info available even on error
-            )
+            result = self._run_command(['smartctl', '-a', disk], check=False)
             
             return {
                 'disk': disk,
@@ -131,26 +140,15 @@ class SMARTMonitoringService:
                 'error_log': self._parse_error_log(result.stdout)
             }
             
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get SMART data: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get SMART data: {str(e)}")
     
     def get_smart_health(self, disk: str) -> Dict[str, str]:
         """
         Get SMART health status (quick check)
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Health status dictionary
         """
         try:
-            result = subprocess.run(
-                ['smartctl', '-H', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            result = self._run_command(['smartctl', '-H', disk], check=False)
             
             health = 'UNKNOWN'
             for line in result.stdout.split('\n'):
@@ -166,72 +164,33 @@ class SMARTMonitoringService:
                 'timestamp': datetime.now().isoformat()
             }
             
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get health status: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get health status: {str(e)}")
     
     def get_smart_attributes(self, disk: str) -> List[Dict[str, Any]]:
         """
         Get SMART attributes for a disk
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            List of SMART attributes
         """
         try:
-            result = subprocess.run(
-                ['smartctl', '-A', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
+            result = self._run_command(['smartctl', '-A', disk], check=False)
             return self._parse_smart_attributes(result.stdout)
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get SMART attributes: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get SMART attributes: {str(e)}")
     
     def get_disk_info(self, disk: str) -> Dict[str, Any]:
         """
         Get basic disk information
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Disk information dictionary
         """
         try:
-            result = subprocess.run(
-                ['smartctl', '-i', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
+            result = self._run_command(['smartctl', '-i', disk], check=False)
             return self._parse_device_info(result.stdout)
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get disk info: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get disk info: {str(e)}")
     
     def start_short_test(self, disk: str) -> Dict[str, str]:
-        """
-        Start SMART short self-test
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Test start confirmation
-        """
+        """Start SMART short self-test"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-t', 'short', disk],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = self._run_command(['smartctl', '-t', 'short', disk])
             
             return {
                 'status': 'started',
@@ -240,27 +199,13 @@ class SMARTMonitoringService:
                 'message': result.stdout.strip(),
                 'timestamp': datetime.now().isoformat()
             }
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to start short test: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to start short test: {str(e)}")
     
     def start_long_test(self, disk: str) -> Dict[str, str]:
-        """
-        Start SMART long self-test
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Test start confirmation
-        """
+        """Start SMART long self-test"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-t', 'long', disk],
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            result = self._run_command(['smartctl', '-t', 'long', disk])
             
             return {
                 'status': 'started',
@@ -269,27 +214,13 @@ class SMARTMonitoringService:
                 'message': result.stdout.strip(),
                 'timestamp': datetime.now().isoformat()
             }
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to start long test: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to start long test: {str(e)}")
     
     def get_test_status(self, disk: str) -> Dict[str, Any]:
-        """
-        Get current test status and history
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Test status and history
-        """
+        """Get current test status and history"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-a', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            result = self._run_command(['smartctl', '-a', disk], check=False)
             
             # Check for running test
             running_test = None
@@ -313,66 +244,28 @@ class SMARTMonitoringService:
                 'test_history': test_log
             }
             
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get test status: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get test status: {str(e)}")
     
     def abort_test(self, disk: str) -> None:
-        """
-        Abort running SMART test
-        
-        Args:
-            disk: Disk path
-        """
+        """Abort running SMART test"""
         try:
-            subprocess.run(
-                ['smartctl', '-X', disk],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to abort test: {e.stderr}")
+            self._run_command(['smartctl', '-X', disk])
+        except Exception as e:
+            raise Exception(f"Failed to abort test: {str(e)}")
     
     def get_error_log(self, disk: str) -> List[Dict[str, Any]]:
-        """
-        Get SMART error log
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            List of error log entries
-        """
+        """Get SMART error log"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-l', 'error', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
+            result = self._run_command(['smartctl', '-l', 'error', disk], check=False)
             return self._parse_error_log(result.stdout)
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get error log: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get error log: {str(e)}")
     
     def get_temperature(self, disk: str) -> Dict[str, Any]:
-        """
-        Get current disk temperature
-        
-        Args:
-            disk: Disk path
-            
-        Returns:
-            Temperature information
-        """
+        """Get current disk temperature"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-A', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            result = self._run_command(['smartctl', '-A', disk], check=False)
             
             temp = None
             for line in result.stdout.split('\n'):
@@ -388,139 +281,119 @@ class SMARTMonitoringService:
                 'unit': 'Celsius',
                 'timestamp': datetime.now().isoformat()
             }
-            
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to get temperature: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to get temperature: {str(e)}")
     
     def enable_smart(self, disk: str) -> None:
         """Enable SMART on a disk"""
         try:
-            subprocess.run(
-                ['smartctl', '-s', 'on', disk],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to enable SMART: {e.stderr}")
+            self._run_command(['smartctl', '-s', 'on', disk])
+        except Exception as e:
+            raise Exception(f"Failed to enable SMART: {str(e)}")
     
     def disable_smart(self, disk: str) -> None:
         """Disable SMART on a disk"""
         try:
-            subprocess.run(
-                ['smartctl', '-s', 'off', disk],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to disable SMART: {e.stderr}")
+            self._run_command(['smartctl', '-s', 'off', disk])
+        except Exception as e:
+            raise Exception(f"Failed to disable SMART: {str(e)}")
     
     # Smartd Integration
     
     def get_smartd_config(self) -> str:
         """Get current smartd.conf configuration"""
+        config_path = Path('/etc/smartd.conf')
+        
+        # Try reading directly (works if we are root)
+        if os.geteuid() == 0:
+            try:
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        return f.read()
+                return "# smartd.conf not found"
+            except Exception as e:
+                raise Exception(f"Failed to read smartd.conf: {str(e)}")
+        
+        # If not root, use cat with sudo
         try:
-            config_path = Path('/etc/smartd.conf')
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    return f.read()
-            return "# smartd.conf not found"
+            result = self._run_command(['cat', str(config_path)], check=True)
+            return result.stdout
         except Exception as e:
-            raise Exception(f"Failed to read smartd.conf: {str(e)}")
+            # If cat fails, it might be because file doesn't exist
+            return "# smartd.conf not found or not readable"
     
     def update_smartd_config(self, config: str) -> None:
         """Update smartd.conf configuration"""
+        config_path = '/etc/smartd.conf'
+        
+        # If we are root, write directly
+        if os.geteuid() == 0:
+            try:
+                with open(config_path, 'w') as f:
+                    f.write(config)
+                return
+            except Exception as e:
+                raise Exception(f"Failed to update smartd.conf: {str(e)}")
+        
+        # If not root, use tee with sudo to write the file
         try:
-            config_path = Path('/etc/smartd.conf')
-            # Would need root privileges
-            with open(config_path, 'w') as f:
-                f.write(config)
-        except Exception as e:
-            raise Exception(f"Failed to update smartd.conf: {str(e)}")
-    
+            cmd = ['sudo', 'tee', config_path]
+            subprocess.run(
+                cmd,
+                input=config,
+                text=True,
+                check=True,
+                capture_output=True
+            )
+        except subprocess.CalledProcessError as e:
+             raise Exception(f"Failed to update smartd.conf: {e.stderr.strip()}")
+
     def get_smartd_status(self) -> Dict[str, Any]:
         """Get smartd daemon status"""
+        cmd_linux = ['systemctl', 'status', 'smartd']
+        cmd_bsd = ['service', 'smartd', 'status']
+
+        # Determine command based on OS
         if is_freebsd():
-            # FreeBSD only uses service command
+            cmds_to_try = [cmd_bsd]
+        else:
+            cmds_to_try = [cmd_linux, cmd_bsd] # Try systemctl first, then service
+
+        for cmd in cmds_to_try:
             try:
-                result = subprocess.run(
-                    ['service', 'smartd', 'status'],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
+                # We use _run_command to handle sudo if needed
+                result = self._run_command(cmd, check=False)
+                
+                # Simple heuristic for "running" based on typical output
+                running = (result.returncode == 0) or ('active (running)' in result.stdout)
+                
                 return {
-                    'running': result.returncode == 0,
+                    'running': running,
                     'status_output': result.stdout
                 }
+            except FileNotFoundError:
+                continue
             except Exception as e:
                 return {'error': f'Unable to check smartd status: {str(e)}'}
         
-        # Linux tries systemctl first (default)
-        try:
-            result = subprocess.run(
-                ['systemctl', 'status', 'smartd'],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            
-            active = 'active (running)' in result.stdout
-            
-            return {
-                'running': active,
-                'status_output': result.stdout
-            }
-            
-        except FileNotFoundError:
-            # Fallback to service command on Linux
-            try:
-                result = subprocess.run(
-                    ['service', 'smartd', 'status'],
-                    capture_output=True,
-                    text=True,
-                    check=False
-                )
-                return {
-                    'running': result.returncode == 0,
-                    'status_output': result.stdout
-                }
-            except:
-                return {'error': 'Unable to check smartd status'}
+        return {'error': 'Unable to check smartd status (commands not found)'}
     
     def restart_smartd(self) -> None:
         """Restart smartd daemon"""
         if is_freebsd():
-            # FreeBSD only uses service command
-            try:
-                subprocess.run(
-                    ['service', 'smartd', 'restart'],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-            except subprocess.CalledProcessError as e:
-                raise Exception(f"Failed to restart smartd: {e.stderr}")
+             try:
+                self._run_command(['service', 'smartd', 'restart'])
+             except Exception as e:
+                raise Exception(f"Failed to restart smartd: {str(e)}")
         else:
-            # Linux tries systemctl first (default)
+            # Linux: try systemctl, fallback to service
             try:
-                subprocess.run(
-                    ['systemctl', 'restart', 'smartd'],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-            except FileNotFoundError:
-                # Fallback to service command on Linux
-                subprocess.run(
-                    ['service', 'smartd', 'restart'],
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
-            except subprocess.CalledProcessError as e:
-                raise Exception(f"Failed to restart smartd: {e.stderr}")
+                self._run_command(['systemctl', 'restart', 'smartd'])
+            except (FileNotFoundError, Exception):
+                try:
+                    self._run_command(['service', 'smartd', 'restart'])
+                except Exception as e:
+                    raise Exception(f"Failed to restart smartd: {str(e)}")
     
     # Scheduled Tests
     
@@ -613,12 +486,7 @@ class SMARTMonitoringService:
     def _get_basic_disk_info(self, disk: str) -> Dict[str, Any]:
         """Get basic disk information"""
         try:
-            result = subprocess.run(
-                ['smartctl', '-i', disk],
-                capture_output=True,
-                text=True,
-                check=False
-            )
+            result = self._run_command(['smartctl', '-i', disk], check=False)
             return self._parse_device_info(result.stdout)
         except:
             return {}
