@@ -4,6 +4,40 @@ A modern web-based management interface for ZFS pools, datasets, snapshots, and 
 
 ![webzfs dashboard](screenshots/0.65/Dashboard-v0.65.png)
 
+***
+# Disclaimer
+Due to Reddit Drama... I'm making this clear up front. **_This is not a vibe coded project._**
+
+I get people's disgust at at the number of vibe coded projects coming out these days. They're coming from people who dont have experience and knowledge to know what they are doing, and yet they are promising the world.  **I get it, I too am frustrated by this.**  However not every new project you see has beem vibecoded. 
+
+[For context, I wrote this article advising against people using AI with ZFS, so it'd be retarded for me to vibecode an entire ZFS management engine with AI.](https://klarasystems.com/articles/why-you-cant-trust-ai-to-tune-zfs/)
+
+The core of the application was developed over several years, by myself as a hobby project.
+As a former iXsystems employee, I have seen inside the sausage factory of TrueNAS as the saying goes. I wanted to design something different. I started this in the winter of 2022 once I left iXsystems. 
+
+If you dig into the code you will no doubt find a lot of issues and ineffeciencies. (If you find them, please file a bug report so I can fix them). The project has evolved a lot over the years I worked on this.
+
+Where AI was used (and has alwyas been disclosed at the bottom of this readme), was to improve the CSS and implement JS for modal confirmations in UI (see the v0.2 and v0.3 ./screenshots to see the old gnarly UI). As a result it used tailwind because that's the most common thing that it knows, and its easy for AI to implement.  I do plan on replacing that in time, once I find a JS/CSS dev I can hire, becuase I'm not a UI dev.  I also used claude to add some documentation since I was going to be posting this publicly and other people would not have the mental context I have for the project. 
+
+As for my providence with ZFS and as a developer...
+
+- I worked at iXsystems on TrueCommand and TrueNAS for 5 years.
+- I have been the producer of BSD Now for over a decade.
+- I currently work at Klarasystems as a ZFS Solutions engineer alongside Allan Jude.
+- I am the current developer and release maintainer for the Lumina Desktop.
+- I am a release mainainer for five Fedora Releases (Fedora Security Lab, Fedora Jam, Fedora Astonomy, Fedora Games Lab, and Fedora Scientific Lab)
+- I was a Puppylinux developer, and I also worked on PC-BSD, TrueOS, and Project Trident.
+
+To address some points brought up by people on reddit in a thread someone posted about this:
+
+- The public copyright date is set to 2025 (and not 2022), because that is when I released it publicly. 
+- Yes I flattened this repo before I pushed it to github. This is common for me because I work in a private gitea where I commit eveything becuase its "private". I push a clean repo to github. [Read more about this here.](https://www.reddit.com/r/zfs/comments/1rt4eoc/comment/oafnkce/)
+- [Former iX employee who I have worked with on many projects openly confirmed I gave him a demo of this in early 2024.](https://www.reddit.com/r/zfs/comments/1rt4eoc/comment/oafss9g/)
+- [Another developer I've worked with before also came forward to acknowledge that I gave him a demo of this years ago.](https://www.reddit.com/r/zfs/comments/1rt4eoc/comment/oaitltr/)
+
+Ok... now back to your regularly scheduled README.md...
+
+***
 
 ## Features
 
